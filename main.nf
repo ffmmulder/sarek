@@ -122,7 +122,7 @@ if (!params.input && params.sentieon) {
         case 'preparerecalibration': tsvPath = "${params.outdir}/Preprocessing/TSV/duplicates_marked_no_table.tsv"; break
         case 'recalibrate': tsvPath = "${params.outdir}/Preprocessing/TSV/duplicates_marked.tsv"; break
         case 'variantcalling': tsvPath = "${params.outdir}/Preprocessing/TSV/recalibrated.tsv"; break
-        case 'controlfreec': tsvPath = "${params.outdir}/VariantCalling/TSV/control-freec_mpileup.tsv"; break
+        case 'controlfreec': tsvPath = "${params.outdir}/Preprocessing/TSV/recalibrated.tsv"; break
         case 'annotate': break
         default: exit 1, "Unknown step ${step}"
     }
@@ -132,7 +132,7 @@ if (!params.input && params.sentieon) {
         case 'preparerecalibration': tsvPath = "${params.outdir}/Preprocessing/TSV/mapped.tsv"; break
         case 'recalibrate': tsvPath = "${params.outdir}/Preprocessing/TSV/mapped_no_duplicates_marked.tsv"; break
         case 'variantcalling': tsvPath = "${params.outdir}/Preprocessing/TSV/recalibrated.tsv"; break
-        case 'controlfreec': tsvPath = "${params.outdir}/VariantCalling/TSV/control-freec_mpileup.tsv"; break
+        case 'controlfreec': tsvPath = "${params.outdir}/Preprocessing/TSV/recalibrated.tsv"; break
         case 'annotate': break
         default: exit 1, "Unknown step ${step}"
     }
@@ -146,7 +146,7 @@ if (tsvPath) {
         case 'preparerecalibration': inputSample = extractBam(tsvFile); break
         case 'recalibrate': inputSample = extractRecal(tsvFile); break
         case 'variantcalling': inputSample = extractBam(tsvFile); break
-        case 'controlfreec': inputSample = extractPileup(tsvFile); break
+        case 'controlfreec': inputSample = extractBam(tsvFile); break
         case 'annotate': break
         default: exit 1, "Unknown step ${step}"
     }
@@ -197,6 +197,7 @@ params.mappability = params.genome && 'controlfreec' in tools ? params.genomes[p
 params.snpeff_db = params.genome && ('snpeff' in tools || 'merge' in tools) ? params.genomes[params.genome].snpeff_db ?: null : null
 params.species = params.genome && ('vep' in tools || 'merge' in tools) ? params.genomes[params.genome].species ?: null : null
 params.vep_cache_version = params.genome && ('vep' in tools || 'merge' in tools) ? params.genomes[params.genome].vep_cache_version ?: null : null
+params.vep_genome = params.genome && ('vep' in tools || 'merge' in tools) ? params.genomes[params.genome].vep_genome ?: null : null
 
 // Initialize channels with files based on params
 ch_ac_loci = params.ac_loci && 'ascat' in tools ? Channel.value(file(params.ac_loci)) : "null"
@@ -380,6 +381,7 @@ log.info summary.collect { k,v -> "${k.padRight(18)}: $v" }.join("\n")
 log.info "-\033[2m--------------------------------------------------\033[0m-"
 
 if ('mutect2' in tools && !(params.pon)) log.warn "[nf-core/sarek] Mutect2 was requested, but as no panel of normals were given, results will not be optimal"
+if ('mutect2' in tools && !(params.germline_resource)) log.warn "[nf-core/sarek] Mutect2 was requested, but as no germline resource was given, results will not be optimal"
 if (params.sentieon) log.warn "[nf-core/sarek] Sentieon will be used, only works if Sentieon is available where nf-core/sarek is run"
 
 // Check the hostnames against configured profiles
@@ -1828,7 +1830,7 @@ bam_recalibrated = bam_recalibrated.dump(tag:'BAM for Variant Calling')
 // Manta will be run in Germline mode, or in Tumor mode depending on status
 // HaplotypeCaller, TIDDIT and Strelka will be run for Normal and Tumor samples
 
-(bamMantaSingle, bamStrelkaSingle, bamTIDDIT, bamFreebayesSingleNoIntervals, bamHaplotypeCallerNoIntervals, bamRecalAll) = bam_recalibrated.into(6)
+(bamMantaSingle, bamStrelkaSingle, bamTIDDIT, bamFreebayesSingleNoIntervals, bamHaplotypeCallerNoIntervals, bamControlFREECSingle, bamRecalAll) = bam_recalibrated.into(7)
 
 (bam_sentieon_DNAseq, bam_sentieon_DNAscope, bam_sentieon_all) = bam_sentieon_deduped_table.into(3)
 
@@ -2209,7 +2211,7 @@ pairBam = bamNormal.cross(bamTumor).map {
 pairBam = pairBam.dump(tag:'BAM Somatic Pair')
 
 // Manta, Strelka, MSIsensor, Mutect2
-(pairBamManta, pairBamStrelka, pairBamStrelkaBP, pairBamMsisensor, pairBamCNVkit, pairBam) = pairBam.into(6)
+(pairBamManta, pairBamStrelka, pairBamStrelkaBP, pairBamMsisensor, pairBamCNVkit, pairBamControlFREEC, pairBam) = pairBam.into(7)
 
 // Add the intervals
 intervalPairBam = pairBam.combine(bedIntervalsPair)
@@ -2305,6 +2307,7 @@ process Mutect2 {
     // please make a panel-of-normals, using at least 40 samples
     // https://gatkforums.broadinstitute.org/gatk/discussion/11136/how-to-call-somatic-mutations-using-gatk4-mutect2
     PON = params.pon ? "--panel-of-normals ${pon}" : ""
+    GLR = params.germline_resource ? "--germline-resource ${germlineResource}" : ""
     intervalsOptions = params.no_intervals ? "" : "-L ${intervalBed}"
     softClippedOption = params.ignore_soft_clipped_bases ? "--dont-use-soft-clipped-bases true" : ""
     """
@@ -2316,7 +2319,7 @@ process Mutect2 {
       -I ${bamNormal} -normal ${idSampleNormal} \
       ${intervalsOptions} \
       ${softClippedOption} \
-      --germline-resource ${germlineResource} \
+      ${GLR} \
       ${PON} \
       -O ${intervalBed.baseName}_${idSampleTumor}_vs_${idSampleNormal}.vcf
     """
@@ -3080,113 +3083,8 @@ process Ascat {
 
 ascatOut.dump(tag:'ASCAT')
 
-// STEP MPILEUP.1
-
-process Mpileup {
-    label 'cpus_1'
-    label 'memory_singleCPU_2_task'
-
-    tag "${idSample}-${intervalBed.baseName}"
-
-    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: { it == "${idSample}.pileup" ? "VariantCalling/${idSample}/Control-FREEC/${it}" : null }
-
-    input:
-        set idPatient, idSample, file(bam), file(bai), file(intervalBed) from bamMpileup
-        file(fasta) from ch_fasta
-        file(fastaFai) from ch_fai
-
-    output:
-        set idPatient, idSample, file("${prefix}${idSample}.pileup") into mpileupMerge
-        set idPatient, idSample into tsv_mpileup
-
-    when: 'controlfreec' in tools || 'mpileup' in tools
-
-    script:
-    prefix = params.no_intervals ? "" : "${intervalBed.baseName}_"
-    intervalsOptions = params.no_intervals ? "" : "-l ${intervalBed}"
-
-    """
-    # Control-FREEC reads uncompresses the zipped file TWICE in single-threaded mode.
-    # we are therefore not using compressed pileups here
-    samtools mpileup \
-        -f ${fasta} ${bam} \
-        ${intervalsOptions} > ${prefix}${idSample}.pileup
-    """
-}
-
-(tsv_mpileup, tsv_mpileup_sample) = tsv_mpileup.groupTuple(by:[0, 1]).into(2)
-
-// Creating a TSV file to restart from this step
-tsv_mpileup.map { idPatient, idSample ->
-    gender = genderMap[idPatient]
-    status = statusMap[idPatient, idSample]
-    mpileup = "${params.outdir}/VariantCalling/${idSample}/Control-FREEC/${idSample}.pileup"
-    "${idPatient}\t${gender}\t${status}\t${idSample}\t${mpileup}\n"
-}.collectFile(
-    name: 'control-freec_mpileup.tsv', sort: true, storeDir: "${params.outdir}/VariantCalling/TSV"
-)
-
-tsv_mpileup_sample
-    .collectFile(storeDir: "${params.outdir}/VariantCalling/TSV") {
-        idPatient, idSample ->
-        status = statusMap[idPatient, idSample]
-        gender = genderMap[idPatient]
-        mpileup = "${params.outdir}/VariantCalling/${idSample}/Control-FREEC/${idSample}.pileup"
-        ["control-freec_mpileup_${idSample}.tsv", "${idPatient}\t${gender}\t${status}\t${idSample}\t${mpileup}\n"]
-}
-
-if (!params.no_intervals) {
-    mpileupMerge = mpileupMerge.groupTuple(by:[0, 1])
-    mpileupNoInt = Channel.empty()
-} else {
-    (mpileupMerge, mpileupNoInt) = mpileupMerge.into(2)
-    mpileupMerge.close()
-}
-
-// STEP MPILEUP.2 - MERGE
-process MergeMpileup {
-    label 'cpus_1'
-
-    tag "${idSample}"
-
-    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: { it == "${idSample}.pileup" ? "VariantCalling/${idSample}/Control-FREEC/${it}" : null }
-
-    input:
-        set idPatient, idSample, file(mpileup) from mpileupMerge
-
-    output:
-        set idPatient, idSample, file("${idSample}.pileup") into mpileupOut
-
-    when: !(params.no_intervals) && 'controlfreec' in tools || 'mpileup' in tools
-
-    script:
-    """
-    for i in `ls -1v *.pileup`;
-        do cat \$i >> ${idSample}.pileup
-    done
-    """
-}
-
-mpileupOut = mpileupOut.mix(mpileupNoInt)
-mpileupOut = mpileupOut.dump(tag:'mpileup')
-
-mpileupOutNormal = Channel.create()
-mpileupOutTumor = Channel.create()
-
-if (step == 'controlfreec') mpileupOut = inputSample
-
-mpileupOut
-    .choice(mpileupOutTumor, mpileupOutNormal) {statusMap[it[0], it[1]] == 0 ? 1 : 0}
-
-(mpileupOutSingle,mpileupOutTumor) = mpileupOutTumor.into(2)
-
-mpileupOut = mpileupOutNormal.combine(mpileupOutTumor, by:0)
-
-mpileupOut = mpileupOut.map {
-    idPatientNormal, idSampleNormal, mpileupOutNormal,
-    idSampleTumor, mpileupOutTumor ->
-    [idPatientNormal, idSampleNormal, idSampleTumor, mpileupOutNormal, mpileupOutTumor]
-}
+bamControlFreeC = Channel.empty()
+if (step == 'controlfreec') bamControlFreeC = inputSample
 
 // STEP CONTROLFREEC.1 - CONTROLFREEC
 
@@ -3198,7 +3096,7 @@ process ControlFREEC {
     publishDir "${params.outdir}/VariantCalling/${idSampleTumor}_vs_${idSampleNormal}/Control-FREEC", mode: params.publish_dir_mode
 
     input:
-        set idPatient, idSampleNormal, idSampleTumor, file(mpileupNormal), file(mpileupTumor) from mpileupOut
+        set idPatient, idSampleNormal, file(bamNormal), file(baiNormal), idSampleTumor, file(bamTumor), file(baiTumor) from pairBamControlFREEC
         file(chrDir) from ch_chr_dir
         file(mappability) from ch_mappability
         file(chrLength) from ch_chr_length
@@ -3209,8 +3107,8 @@ process ControlFREEC {
         file(targetBED) from ch_target_bed
 
     output:
-        set idPatient, idSampleNormal, idSampleTumor, file("${idSampleTumor}.pileup_CNVs"), file("${idSampleTumor}.pileup_ratio.txt"), file("${idSampleTumor}.pileup_BAF.txt") into controlFreecViz
-        set file("*.pileup*"), file("${idSampleTumor}_vs_${idSampleNormal}.config.txt") into controlFreecOut
+        set idPatient, idSampleNormal, idSampleTumor, file("${idSampleTumor}.bam_CNVs"), file("${idSampleTumor}.bam_ratio.txt") into controlFreecViz
+        set file("*.bam*"), file("${idSampleTumor}_vs_${idSampleNormal}.config.txt") into controlFreecOut
 
     when: 'controlfreec' in tools
 
@@ -3221,7 +3119,7 @@ process ControlFREEC {
     window = params.cf_window ? "window = ${params.cf_window}" : ""
     coeffvar = params.cf_coeff ? "coefficientOfVariation = ${params.cf_coeff}" : ""
     use_bed = params.target_bed ? "captureRegions = ${targetBED}" : ""
-    // This parameter makes Control-FREEC unstable (still in Beta according to the developers)
+    // This parameter makes Control-FREEC unstable (still in Beta according to the developers)
     // so we disable it by setting it to its default value (it is disabled by default)
     //min_subclone = params.target_bed ? "30" : "20"
     min_subclone = 100
@@ -3229,49 +3127,46 @@ process ControlFREEC {
     breakPointThreshold = params.target_bed ? "1.2" : "0.8"
     breakPointType = params.target_bed ? "4" : "2"
     mappabilitystr = params.mappability ? "gemMappabilityFile = \${PWD}/${mappability}" : ""
-    contamination_adjustment = params.cf_contamination_adjustment ? "contaminationAdjustment = TRUE" : ""
-    contamination_value = params.cf_contamination ? "contamination = ${params.cf_contamination}" : ""
+
     """
     touch ${config}
     echo "[general]" >> ${config}
     echo "BedGraphOutput = TRUE" >> ${config}
     echo "chrFiles = \${PWD}/${chrDir.fileName}" >> ${config}
     echo "chrLenFile = \${PWD}/${chrLength.fileName}" >> ${config}
-    echo "forceGCcontentNormalization = 1" >> ${config}
+    echo "forceGCcontentNormalization = 1" >> ${config}   #no_iap
     echo "maxThreads = ${task.cpus}" >> ${config}
     echo "minimalSubclonePresence = ${min_subclone}" >> ${config}
     echo "ploidy = ${params.cf_ploidy}" >> ${config}
-    echo "sex = ${gender}" >> ${config}
-    echo "readCountThreshold = ${readCountThreshold}" >> ${config}
-    echo "breakPointThreshold = ${breakPointThreshold}" >> ${config}
-    echo "breakPointType = ${breakPointType}" >> ${config}
+    echo "sex = ${gender}" >> ${config}	#no_iap
+    echo "readCountThreshold = ${readCountThreshold}" >> ${config}	#no_iap
+    echo "breakPointThreshold = ${breakPointThreshold}" >> ${config}	#no_iap
+    echo "breakPointType = ${breakPointType}" >> ${config}	#no_iap
     echo "${window}" >> ${config}
-    echo "${coeffvar}" >> ${config}
+    echo "${coeffvar}" >> ${config}	#no_iap
     echo "${mappabilitystr}" >> ${config}
-    echo "${contamination_adjustment}" >> ${config}
-    echo "${contamination_value}" >> ${config}
     echo "" >> ${config}
     
     echo "[control]" >> ${config}
-    echo "inputFormat = pileup" >> ${config}
-    echo "mateFile = \${PWD}/${mpileupNormal}" >> ${config}
-    echo "mateOrientation = FR" >> ${config}
+    echo "inputFormat = BAM" >> ${config}
+    echo "mateFile = \${PWD}/${bamNormal}" >> ${config}
+    # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
 
     echo "[sample]" >> ${config}
-    echo "inputFormat = pileup" >> ${config}
-    echo "mateFile = \${PWD}/${mpileupTumor}" >> ${config}
-    echo "mateOrientation = FR" >> ${config}
-    echo "" >> ${config}
-
-    echo "[BAF]" >> ${config}
-    echo "SNPfile = ${dbsnp.fileName}" >> ${config}
+    echo "inputFormat = BAM" >> ${config}
+    echo "mateFile = \${PWD}/${bamTumor}" >> ${config}
+    # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
 
     echo "[target]" >> ${config}
     echo "${use_bed}" >> ${config}
 
     freec -conf ${config}
+
+    #output is created usig bam names, rename to sample name
+    for f in ${bamNormal}_*; do mv \${f} \${f/${bamNormal}/${idSampleNormal}.bam}; done
+    for f in ${bamTumor}_*; do mv \${f} \${f/${bamTumor}/${idSampleTumor}.bam}; done
     """
 }
 
@@ -3280,12 +3175,12 @@ controlFreecOut.dump(tag:'ControlFREEC')
 process ControlFREECSingle {
     label 'cpus_8'
 
-    tag "${idSampleTumor}"
+    tag "${idSample}"
 
-    publishDir "${params.outdir}/VariantCalling/${idSampleTumor}/Control-FREEC", mode: params.publish_dir_mode
+    publishDir "${params.outdir}/VariantCalling/${idSample}/Control-FREEC", mode: params.publish_dir_mode
 
     input:
-        set idPatient, idSampleTumor, file(mpileupTumor) from mpileupOutSingle
+        set idPatient, idSample, file(bam), file(bai) from bamControlFREECSingle
         file(chrDir) from ch_chr_dir
         file(mappability) from ch_mappability
         file(chrLength) from ch_chr_length
@@ -3296,19 +3191,19 @@ process ControlFREECSingle {
         file(targetBED) from ch_target_bed
 
     output:
-        set idPatient, idSampleTumor, file("${idSampleTumor}.pileup_CNVs"), file("${idSampleTumor}.pileup_ratio.txt"), file("${idSampleTumor}.pileup_BAF.txt") into controlFreecVizSingle
-        set file("*.pileup*"), file("${idSampleTumor}.config.txt") into controlFreecOutSingle
+        set idPatient, idSample, file("${idSample}.bam_CNVs"), file("${idSample}.bam_ratio.txt") into controlFreecVizSingle
+        set file("*.bam*"), file("${idSample}.config.txt") into controlFreecOutSingle
 
     when: 'controlfreec' in tools
 
     script:
-    config = "${idSampleTumor}.config.txt"
+    config = "${idSample}.config.txt"
     gender = genderMap[idPatient]
     // Window has higher priority than coefficientOfVariation if both given
     window = params.cf_window ? "window = ${params.cf_window}" : ""
     coeffvar = params.cf_coeff ? "coefficientOfVariation = ${params.cf_coeff}" : ""
     use_bed = params.target_bed ? "captureRegions = ${targetBED}" : ""
-    // This parameter makes Control-FREEC unstable (still in Beta according to the developers)
+    // This parameter makes Control-FREEC unstable (still in Beta according to the developers)
     // so we disable it by setting it to its default value (it is disabled by default)
     //min_subclone = params.target_bed ? "30" : "20"
     min_subclone = 100
@@ -3316,8 +3211,7 @@ process ControlFREECSingle {
     breakPointThreshold = params.target_bed ? "1.2" : "0.8"
     breakPointType = params.target_bed ? "4" : "2"
     mappabilitystr = params.mappability ? "gemMappabilityFile = \${PWD}/${mappability}" : ""
-    contamination_adjustment = params.cf_contamination_adjustment ? "contaminationAdjustment = TRUE" : ""
-    contamination_value = params.cf_contamination ? "contamination = ${params.cf_contamination}" : ""
+
     """
     touch ${config}
     echo "[general]" >> ${config}
@@ -3335,24 +3229,21 @@ process ControlFREECSingle {
     echo "${window}" >> ${config}
     echo "${coeffvar}" >> ${config}
     echo "${mappabilitystr}" >> ${config}
-    echo "${contamination_adjustment}" >> ${config}
-    echo "${contamination_value}" >> ${config}
     echo "" >> ${config}
 
     echo "[sample]" >> ${config}
-    echo "inputFormat = pileup" >> ${config}
-    echo "mateFile = \${PWD}/${mpileupTumor}" >> ${config}
-    echo "mateOrientation = FR" >> ${config}
-    echo "" >> ${config}
-
-    echo "[BAF]" >> ${config}
-    echo "SNPfile = ${dbsnp.fileName}" >> ${config}
+    echo "inputFormat = BAM" >> ${config}
+    echo "mateFile = \${PWD}/${bam}" >> ${config}
+    # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
 
     echo "[target]" >> ${config}
     echo "${use_bed}" >> ${config}
 
     freec -conf ${config}
+
+    #output is created usig bam names, rename to sample name
+    for f in ${bam}_*; do mv \${f} \${f/${bam}/${idSample}.bam}; done
     """
 }
 
@@ -3368,7 +3259,7 @@ process ControlFreecViz {
     publishDir "${params.outdir}/VariantCalling/${idSampleTumor}_vs_${idSampleNormal}/Control-FREEC", mode: params.publish_dir_mode
 
     input:
-        set idPatient, idSampleNormal, idSampleTumor, file(cnvTumor), file(ratioTumor), file(bafTumor) from controlFreecViz
+        set idPatient, idSampleNormal, idSampleTumor, file(cnvTumor), file(ratioTumor) from controlFreecViz
 
     output:
         set file("*.txt"), file("*.png"), file("*.bed") into controlFreecVizOut
@@ -3381,7 +3272,7 @@ process ControlFreecViz {
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/assess_significance.R | R --slave --args ${cnvTumor} ${ratioTumor}
 
     echo "############### Creating graph for TUMOR ratios ###############"
-    cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 2 ${ratioTumor} ${bafTumor}
+    cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 1 ${ratioTumor}
 
     echo "############### Creating BED files for TUMOR ##############"
     perl /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/freec2bed.pl -f ${ratioTumor} > ${idSampleTumor}.bed
@@ -3398,7 +3289,7 @@ process ControlFreecVizSingle {
     publishDir "${params.outdir}/VariantCalling/${idSampleTumor}/Control-FREEC", mode: params.publish_dir_mode
 
     input:
-        set idPatient, idSampleTumor, file(cnvTumor), file(ratioTumor), file(bafTumor) from controlFreecVizSingle
+        set idPatient, idSampleTumor, file(cnvTumor), file(ratioTumor) from controlFreecVizSingle
 
     output:
         set file("*.txt"), file("*.png"), file("*.bed") into controlFreecVizOutSingle
@@ -3411,7 +3302,7 @@ process ControlFreecVizSingle {
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/assess_significance.R | R --slave --args ${cnvTumor} ${ratioTumor}
 
     echo "############### Creating graph for TUMOR ratios ###############"
-    cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 2 ${ratioTumor} ${bafTumor}
+    cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 1 ${ratioTumor}
 
     echo "############### Creating BED files for TUMOR ##############"
     perl /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/freec2bed.pl -f ${ratioTumor} > ${idSampleTumor}.bed
@@ -3689,7 +3580,7 @@ process VEP {
 
     script:
     reducedVCF = reduceVCF(vcf.fileName)
-    genome = params.genome == 'smallGRCh37' ? 'GRCh37' : params.genome
+    genome = (params.vep_genome ) ? params.vep_genome : params.genome
 
     dir_cache = (params.vep_cache && params.annotation_cache) ? " \${PWD}/${dataDir}" : "/.vep"
     cadd = (params.cadd_cache && params.cadd_wg_snvs && params.cadd_indels) ? "--plugin CADD,whole_genome_SNVs.tsv.gz,InDels.tsv.gz" : ""
@@ -3752,7 +3643,7 @@ process VEPmerge {
 
     script:
     reducedVCF = reduceVCF(vcf.fileName)
-    genome = params.genome == 'smallGRCh37' ? 'GRCh37' : params.genome
+    genome = (params.vep_genome ) ? params.vep_genome : params.genome
     dir_cache = (params.vep_cache && params.annotation_cache) ? " \${PWD}/${dataDir}" : "/.vep"
     cadd = (params.cadd_cache && params.cadd_wg_snvs && params.cadd_indels) ? "--plugin CADD,whole_genome_SNVs.tsv.gz,InDels.tsv.gz" : ""
     genesplicer = params.genesplicer ? "--plugin GeneSplicer,/opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/genesplicer,/opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/share/genesplicer-1.0-1/human,context=200,tmpdir=\$PWD/${reducedVCF}" : "--offline"
