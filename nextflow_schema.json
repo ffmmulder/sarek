@@ -447,6 +447,13 @@
                     "description": "Path to VEP cache",
                     "help_text": "To be used with `--annotation_cache`",
                     "hidden": true
+                },                
+                "vep_genome": {
+                    "type": "string",
+                    "default": "null",
+                    "fa_icon": "fas fa-wrench",
+                    "description": "Set name for VEP genome image base",
+                    "hidden": true
                 }
             }
         },
