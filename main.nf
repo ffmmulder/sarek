@@ -2355,6 +2355,7 @@ process Mutect2Single {
     // please make a panel-of-normals, using at least 40 samples
     // https://gatkforums.broadinstitute.org/gatk/discussion/11136/how-to-call-somatic-mutations-using-gatk4-mutect2
     PON = params.pon ? "--panel-of-normals ${pon}" : ""
+    GLR = params.germline_resource ? "--germline-resource ${germlineResource}" : ""
     intervalsOptions = params.no_intervals ? "" : "-L ${intervalBed}"
     softClippedOption = params.ignore_soft_clipped_bases ? "--dont-use-soft-clipped-bases true" : ""
     """
@@ -2365,7 +2366,7 @@ process Mutect2Single {
       -I ${bamTumor}  -tumor ${idSampleTumor} \
       ${intervalsOptions} \
       ${softClippedOption} \
-      --germline-resource ${germlineResource} \
+      ${GLR} \
       ${PON} \
       -O ${intervalBed.baseName}_${idSampleTumor}.vcf
     """
@@ -3127,7 +3128,8 @@ process ControlFREEC {
     breakPointThreshold = params.target_bed ? "1.2" : "0.8"
     breakPointType = params.target_bed ? "4" : "2"
     mappabilitystr = params.mappability ? "gemMappabilityFile = \${PWD}/${mappability}" : ""
-
+    contamination_adjustment = params.cf_contamination_adjustment ? "contaminationAdjustment = TRUE" : ""
+    contamination_value = params.cf_contamination ? "contamination = ${params.cf_contamination}" : ""
     """
     touch ${config}
     echo "[general]" >> ${config}
@@ -3145,23 +3147,21 @@ process ControlFREEC {
     echo "${window}" >> ${config}
     echo "${coeffvar}" >> ${config}	#no_iap
     echo "${mappabilitystr}" >> ${config}
-    echo "" >> ${config}
-    
+    echo "${contamination_adjustment}" >> ${config}
+    echo "${contamination_value}" >> ${config}
+    echo "" >> ${config}    
     echo "[control]" >> ${config}
     echo "inputFormat = BAM" >> ${config}
     echo "mateFile = \${PWD}/${bamNormal}" >> ${config}
     # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
-
     echo "[sample]" >> ${config}
     echo "inputFormat = BAM" >> ${config}
     echo "mateFile = \${PWD}/${bamTumor}" >> ${config}
     # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
-
     echo "[target]" >> ${config}
     echo "${use_bed}" >> ${config}
-
     freec -conf ${config}
 
     #output is created usig bam names, rename to sample name
@@ -3211,7 +3211,8 @@ process ControlFREECSingle {
     breakPointThreshold = params.target_bed ? "1.2" : "0.8"
     breakPointType = params.target_bed ? "4" : "2"
     mappabilitystr = params.mappability ? "gemMappabilityFile = \${PWD}/${mappability}" : ""
-
+    contamination_adjustment = params.cf_contamination_adjustment ? "contaminationAdjustment = TRUE" : ""
+    contamination_value = params.cf_contamination ? "contamination = ${params.cf_contamination}" : ""
     """
     touch ${config}
     echo "[general]" >> ${config}
@@ -3229,19 +3230,17 @@ process ControlFREECSingle {
     echo "${window}" >> ${config}
     echo "${coeffvar}" >> ${config}
     echo "${mappabilitystr}" >> ${config}
+    echo "${contamination_adjustment}" >> ${config}
+    echo "${contamination_value}" >> ${config}
     echo "" >> ${config}
-
     echo "[sample]" >> ${config}
     echo "inputFormat = BAM" >> ${config}
     echo "mateFile = \${PWD}/${bam}" >> ${config}
     # echo "mateOrientation = FR" >> ${config}
     echo "" >> ${config}
-
     echo "[target]" >> ${config}
     echo "${use_bed}" >> ${config}
-
     freec -conf ${config}
-
     #output is created usig bam names, rename to sample name
     for f in ${bam}_*; do mv \${f} \${f/${bam}/${idSample}.bam}; done
     """
@@ -3270,10 +3269,8 @@ process ControlFreecViz {
     """
     echo "############### Calculating significance values for TUMOR CNVs #############"
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/assess_significance.R | R --slave --args ${cnvTumor} ${ratioTumor}
-
     echo "############### Creating graph for TUMOR ratios ###############"
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 1 ${ratioTumor}
-
     echo "############### Creating BED files for TUMOR ##############"
     perl /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/freec2bed.pl -f ${ratioTumor} > ${idSampleTumor}.bed
     """
@@ -3300,10 +3297,8 @@ process ControlFreecVizSingle {
     """
     echo "############### Calculating significance values for TUMOR CNVs #############"
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/assess_significance.R | R --slave --args ${cnvTumor} ${ratioTumor}
-
     echo "############### Creating graph for TUMOR ratios ###############"
     cat /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/makeGraph.R | R --slave --args 1 ${ratioTumor}
-
     echo "############### Creating BED files for TUMOR ##############"
     perl /opt/conda/envs/nf-core-sarek-${workflow.manifest.version}/bin/freec2bed.pl -f ${ratioTumor} > ${idSampleTumor}.bed
     """
