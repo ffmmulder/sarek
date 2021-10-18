@@ -80,6 +80,7 @@ if (!checkParameterList(annotate_tools,annoList)) exit 1, 'Unknown tool(s) to an
 // Check parameters
 if ((params.ascat_ploidy && !params.ascat_purity) || (!params.ascat_ploidy && params.ascat_purity)) exit 1, 'Please specify both --ascat_purity and --ascat_ploidy, or none of them'
 if (params.umi && !(params.read_structure1 && params.read_structure2)) exit 1, 'Please specify both --read_structure1 and --read_structure2, when using --umi'
+if ('customvcf' in tools && (!params.custom_vcf_fields || !params.custom_vcf)) exit 1, 'Please specify both --custom_vcf and --custom_vcf_fields, when using "customvcf" annotation tool'
 
 // Check AWS batch settings
 if (workflow.profile.contains('awsbatch')) {
@@ -211,6 +212,7 @@ ch_germline_resource = params.germline_resource && 'mutect2' in tools ? Channel.
 ch_intervals = params.intervals && !params.no_intervals && !('annotate' in step) ? Channel.value(file(params.intervals)) : "null"
 ch_known_indels = params.known_indels && ('mapping' in step || 'preparerecalibration' in step) ? Channel.value(file(params.known_indels)) : "null"
 ch_mappability = params.mappability && 'controlfreec' in tools ? Channel.value(file(params.mappability)) : "null"
+ch_custom_vcf = params.custom_vcf ? Channel.value(file(params.custom_vcf)) : "null"
 
 // Initialize channels with values based on params
 ch_snpeff_cache = params.snpeff_cache ? Channel.value(file(params.snpeff_cache)) : "null"
@@ -315,6 +317,13 @@ if (params.cadd_cache) {
     if (params.cadd_indels)  summary['CADD indels']  = params.cadd_indels
     if (params.cadd_wg_snvs) summary['CADD wg snvs'] = params.cadd_wg_snvs
 }
+
+if ('customvcf' in tools) {
+    summary['CustomVCF'] = "Options"
+    if (params.custom_vcf) summary['CustomVCF'] = params.custom_vcf
+    if (params.custom_vcf_fields) summary['CustomVCFFields'] = params.custom_vcf_fields
+}
+
 
 if (params.genesplicer) summary['genesplicer'] = "Enabled"
 
@@ -3475,7 +3484,8 @@ if (step == 'annotate') {
 
 // as now have the list of VCFs to annotate, the first step is to annotate with allele frequencies, if there are any
 
-(vcfSnpeff, vcfVep) = vcfAnnotation.into(2)
+(vcfSnpeff, vcfVep, vcfCustom) = vcfAnnotation.into(3)
+
 
 vcfVep = vcfVep.map {
   variantCaller, idSample, vcf ->
@@ -3694,6 +3704,87 @@ process CompressVCFvep {
 
 compressVCFOutVEP = compressVCFOutVEP.dump(tag:'VCF')
 
+//STEP 3. CUSTOM VCF ANNOTATION
+process VCFCustom {
+    tag "${idSample} - ${variantCaller} - ${vcf}"
+
+    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: {
+        if (it == "${reducedVCF}_customVCF.ann.vcf") null
+        else "Reports/${idSample}/customVCF/${it}"
+    }
+
+    input:
+        set variantCaller, idSample, file(vcf) from vcfCustom
+        file(custom_vcf) from ch_custom_vcf
+        
+    output:
+        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf") into customVCF
+
+    when: 'customvcf' in tools
+
+    script:
+    reducedVCF = reduceVCF(vcf.fileName)
+    vcffields = params.custom_vcf_fields
+
+    """
+    mkdir ${reducedVCF}
+
+    bcftools annotate \
+        -o ${reducedVCF}_customVCF.ann.vcf.gz \
+        -a ${custom_vcf} \
+        -O z \
+        -c ${vcffields} \
+        ${vcf}
+
+    tabix ${reducedVCF}_customVCF.ann.vcf.gz
+        
+
+    rm -rf ${reducedVCF}
+    """
+}
+
+
+process VCFCustomMerge {
+    tag "${idSample} - ${variantCaller} - ${vcf}"
+
+    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: {
+        if (it == "${reducedVCF}_customVCF.ann.vcf") null
+        else "Reports/${idSample}/customVCF/${it}"
+    }
+
+    input:
+        set variantCaller, idSample, file(vcf), file(idx)  from compressVCFOutVEP
+        file(custom_vcf) from ch_custom_vcf
+        
+    output:
+        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf") into customVCFmerge
+
+    when: 'customvcf' in tools && 'merge' in tools
+
+    script:
+    reducedVCF = reduceVCF(vcf.fileName)
+    vcffields = params.custom_vcf_fields
+
+    """
+    mkdir ${reducedVCF}
+
+    bcftools annotate \
+        -o ${reducedVCF}_customVCF.ann.vcf.gz \
+        -a ${custom_vcf} \
+        -O z \
+        -c ${vcffields} \
+        ${vcf}
+
+    tabix ${reducedVCF}_customVCF.ann.vcf.gz
+        
+
+    rm -rf ${reducedVCF}
+    """
+}
+
+compressVCFOutCustom = customVCF.mix(customVCFmerge)
+
+compressVCFOutCustom = compressVCFOutCustom.dump(tag:'VCF')
 /*
 ================================================================================
                                      MultiQC

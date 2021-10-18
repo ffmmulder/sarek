@@ -454,6 +454,20 @@
                     "fa_icon": "fas fa-wrench",
                     "description": "Set name for VEP genome image base",
                     "hidden": true
+                },                
+                "custom_vcf": {
+                    "type": "string",
+                    "default": "null",
+                    "fa_icon": "fas fa-file",
+                    "description": "Path to custom vcf annotation file",
+                    "hidden": true
+                },                
+                "custom_vcf_fields": {
+                    "type": "string",
+                    "default": "null",
+                    "fa_icon": "fas fa-wrench",
+                    "description": "Fields to include from custom VCF",
+                    "hidden": true
                 }
             }
         },
