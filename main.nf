@@ -81,6 +81,7 @@ if (!checkParameterList(annotate_tools,annoList)) exit 1, 'Unknown tool(s) to an
 if ((params.ascat_ploidy && !params.ascat_purity) || (!params.ascat_ploidy && params.ascat_purity)) exit 1, 'Please specify both --ascat_purity and --ascat_ploidy, or none of them'
 if (params.umi && !(params.read_structure1 && params.read_structure2)) exit 1, 'Please specify both --read_structure1 and --read_structure2, when using --umi'
 if ('customvcf' in tools && (!params.custom_vcf_fields || !params.custom_vcf)) exit 1, 'Please specify both --custom_vcf and --custom_vcf_fields, when using "customvcf" annotation tool'
+if ('customvcf' in tools && (!hasExtension(params.custom_vcf, "vcf.gz") || hasExtension(params.input, "vcf"))) exit 1, 'CustomVCF requires bzipped input and annotation files'
 
 // Check AWS batch settings
 if (workflow.profile.contains('awsbatch')) {
@@ -213,6 +214,7 @@ ch_intervals = params.intervals && !params.no_intervals && !('annotate' in step)
 ch_known_indels = params.known_indels && ('mapping' in step || 'preparerecalibration' in step) ? Channel.value(file(params.known_indels)) : "null"
 ch_mappability = params.mappability && 'controlfreec' in tools ? Channel.value(file(params.mappability)) : "null"
 ch_custom_vcf = params.custom_vcf ? Channel.value(file(params.custom_vcf)) : "null"
+ch_custom_vcf_tbi = params.custom_vcf_tbi ? Channel.value(file(params.custom_vcf_tbi)) : "null"
 
 // Initialize channels with values based on params
 ch_snpeff_cache = params.snpeff_cache ? Channel.value(file(params.snpeff_cache)) : "null"
@@ -321,6 +323,7 @@ if (params.cadd_cache) {
 if ('customvcf' in tools) {
     summary['CustomVCF'] = "Options"
     if (params.custom_vcf) summary['CustomVCF'] = params.custom_vcf
+    if (params.custom_vcf_tbi) summary['CustomVCF'] = params.custom_vcf_tbi
     if (params.custom_vcf_fields) summary['CustomVCFFields'] = params.custom_vcf_fields
 }
 
@@ -3492,6 +3495,11 @@ vcfVep = vcfVep.map {
   [variantCaller, idSample, vcf, null]
 }
 
+vcfCustom = vcfCustom.map {
+  variantCaller, idSample, vcf ->
+  [variantCaller, idSample, vcf, vcf+".tbi"]
+}
+
 // STEP SNPEFF
 
 process Snpeff {
@@ -3705,20 +3713,20 @@ process CompressVCFvep {
 compressVCFOutVEP = compressVCFOutVEP.dump(tag:'VCF')
 
 //STEP 3. CUSTOM VCF ANNOTATION
+// https://samtools.github.io/bcftools/howtos/annotate.html
+// https://samtools.github.io/bcftools/bcftools.html#annotate
 process VCFCustom {
     tag "${idSample} - ${variantCaller} - ${vcf}"
 
-    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: {
-        if (it == "${reducedVCF}_customVCF.ann.vcf") null
-        else "Reports/${idSample}/customVCF/${it}"
-    }
+    publishDir "${params.outdir}/Annotation/${idSample}/CustomVCF", mode: params.publish_dir_mode
 
     input:
-        set variantCaller, idSample, file(vcf) from vcfCustom
+        set variantCaller, idSample, file(vcf), file(idx) from vcfCustom
         file(custom_vcf) from ch_custom_vcf
+        file(custom_vcf_tbi) from ch_custom_vcf_tbi
         
     output:
-        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf") into customVCF
+        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf.gz"), file("${reducedVCF}_customVCF.ann.vcf.gz.tbi") into customVCF
 
     when: 'customvcf' in tools
 
@@ -3727,8 +3735,14 @@ process VCFCustom {
     vcffields = params.custom_vcf_fields
 
     """
-    mkdir ${reducedVCF}
+    if [[ ! -f ${vcf}.tbi ]]; then
+        tabix ${vcf}
+    fi
 
+    if [[ ! -f ${custom_vcf}.tbi ]]; then
+        tabix ${custom_vcf}
+    fi
+    
     bcftools annotate \
         -o ${reducedVCF}_customVCF.ann.vcf.gz \
         -a ${custom_vcf} \
@@ -3737,9 +3751,7 @@ process VCFCustom {
         ${vcf}
 
     tabix ${reducedVCF}_customVCF.ann.vcf.gz
-        
 
-    rm -rf ${reducedVCF}
     """
 }
 
@@ -3747,17 +3759,15 @@ process VCFCustom {
 process VCFCustomMerge {
     tag "${idSample} - ${variantCaller} - ${vcf}"
 
-    publishDir params.outdir, mode: params.publish_dir_mode, saveAs: {
-        if (it == "${reducedVCF}_customVCF.ann.vcf") null
-        else "Reports/${idSample}/customVCF/${it}"
-    }
+    publishDir "${params.outdir}/Annotation/${idSample}/CustomVCF", mode: params.publish_dir_mode
 
     input:
         set variantCaller, idSample, file(vcf), file(idx)  from compressVCFOutVEP
         file(custom_vcf) from ch_custom_vcf
+        file(custom_vcf_tbi) from ch_custom_vcf_tbi
         
     output:
-        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf") into customVCFmerge
+        set variantCaller, idSample, file("${reducedVCF}_customVCF.ann.vcf.gz"), file("${reducedVCF}_customVCF.ann.vcf.gz.tbi") into customVCFmerge
 
     when: 'customvcf' in tools && 'merge' in tools
 
@@ -3766,8 +3776,6 @@ process VCFCustomMerge {
     vcffields = params.custom_vcf_fields
 
     """
-    mkdir ${reducedVCF}
-
     bcftools annotate \
         -o ${reducedVCF}_customVCF.ann.vcf.gz \
         -a ${custom_vcf} \
@@ -3776,9 +3784,6 @@ process VCFCustomMerge {
         ${vcf}
 
     tabix ${reducedVCF}_customVCF.ann.vcf.gz
-        
-
-    rm -rf ${reducedVCF}
     """
 }
 
@@ -4064,6 +4069,7 @@ def defineToolList() {
         'ascat',
         'cnvkit',
         'controlfreec',
+        'customvcf',
         'dnascope',
         'dnaseq',
         'freebayes',

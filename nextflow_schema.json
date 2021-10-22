@@ -462,6 +462,13 @@
                     "description": "Path to custom vcf annotation file",
                     "hidden": true
                 },                
+                "custom_vcf_tbi": {
+                    "type": "string",
+                    "default": "null",
+                    "fa_icon": "fas fa-file",
+                    "description": "Path to custom vcf annotation index file",
+                    "hidden": true
+                },  
                 "custom_vcf_fields": {
                     "type": "string",
                     "default": "null",
